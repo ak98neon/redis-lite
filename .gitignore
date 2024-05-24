@@ -4,6 +4,7 @@ target/
 !**/src/test/**/target/
 
 ### IntelliJ IDEA ###
+.idea/
 .idea/modules.xml
 .idea/jarRepositories.xml
 .idea/compiler.xml
@@ -20,9 +21,6 @@ target/
 .settings
 .springBeans
 .sts4-cache
-
-### Intellij IDEA ###
-.idea/
 
 ### NetBeans ###
 /nbproject/private/
