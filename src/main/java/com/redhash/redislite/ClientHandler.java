@@ -4,12 +4,19 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.io.OutputStreamWriter;
 import java.net.Socket;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentMap;
+import java.util.stream.IntStream;
 
 import static java.lang.System.currentTimeMillis;
 
@@ -45,11 +52,112 @@ public class ClientHandler extends Thread {
         map.put("ECHO", (args, out) -> out.write(RESPMarshalling.serialize(ECHO_RESPONSE)));
         map.put("SET", (args, out) -> processSetCommand(storage, args, out));
         map.put("GET", (args, out) -> processGetCommand(storage, args, out));
+        map.put("EXISTS", (args, out) -> processExistsCommand(storage, args, out));
+        map.put("DEL", (args, out) -> processDelCommand(storage, args, out));
+        map.put("INCR", (args, out) -> processIncrCommand(storage, args, out));
+        map.put("DECR", (args, out) -> processDecrCommand(storage, args, out));
+        map.put("LPUSH", (args, out) -> processLpushCommand(storage, args, out));
+        map.put("RPUSH", (args, out) -> processRpushCommand(storage, args, out));
+        map.put("SAVE", (args, out) -> processSaveCommand(storage, out));
         return map;
+    }
+
+    private static void processSaveCommand(InMemoryStorage storage, BufferedWriter out) throws IOException {
+        try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream("redis-lite.dat"))) {
+            oos.writeObject(storage.getStorage());
+            oos.writeObject(storage.getExpiry());
+            oos.writeObject(storage.getListStorage());
+            out.write(RESPMarshalling.serialize(OK_RESPONSE));
+        }
+    }
+
+    public static InMemoryStorage processLoadCommand() throws ClassNotFoundException {
+        try (ObjectInputStream in = new ObjectInputStream(new FileInputStream("redis-lite.dat"))) {
+            var storage = (ConcurrentMap<String, String>) in.readObject();
+            var expiry = (ConcurrentMap<String, Long>) in.readObject();
+            var listStorage = (ConcurrentMap<String, List<String>>) in.readObject();
+            return new InMemoryStorage(storage, expiry, listStorage);
+        } catch (Exception e) {
+            log.warn("Error loading data from disk", e);
+            return new InMemoryStorage();
+        }
+    }
+
+    private static void processRpushCommand(InMemoryStorage storage, String[] args, BufferedWriter out) throws IOException {
+        int listSize = 0;
+        for (int i = 0; i < args.length; i++) {
+            if (i > 1) {
+                listSize = storage.rpush(args[1], args[i]);
+            }
+        }
+        out.write(RESPMarshalling.serialize(String.valueOf(listSize)));
+    }
+
+    private static void processLpushCommand(InMemoryStorage storage, String[] args, BufferedWriter out) throws IOException {
+        int listSize = 0;
+        for (int i = 0; i < args.length; i++) {
+            if (i > 1) {
+                listSize = storage.lpush(args[1], args[i]);
+            }
+        }
+        out.write(RESPMarshalling.serialize(String.valueOf(listSize)));
+    }
+
+    private static void processDecrCommand(InMemoryStorage storage, String[] args, BufferedWriter out) throws IOException {
+        var value = args[1];
+        if (storage.exists(value)) {
+            var currentValue = storage.get(value);
+            if (currentValue.matches("\\d+")) {
+                var newValue = Long.parseLong(currentValue) - 1;
+                storage.set(value, String.valueOf(newValue));
+                out.write(RESPMarshalling.serialize(String.valueOf(newValue)));
+            } else {
+                out.write(RESPMarshalling.serialize("ERR value is not an integer or out of range"));
+            }
+        } else {
+            storage.set(value, "-1");
+            out.write(RESPMarshalling.serialize("-1"));
+        }
+    }
+
+    private static void processIncrCommand(InMemoryStorage storage, String[] args, BufferedWriter out) throws IOException {
+        var value = args[1];
+        if (storage.exists(value)) {
+            var currentValue = storage.get(value);
+            if (currentValue.matches("\\d+")) {
+                var newValue = Long.parseLong(currentValue) + 1;
+                storage.set(value, String.valueOf(newValue));
+                out.write(RESPMarshalling.serialize(String.valueOf(newValue)));
+            } else {
+                out.write(RESPMarshalling.serialize("ERR value is not an integer or out of range"));
+            }
+        } else {
+            storage.set(value, "1");
+            out.write(RESPMarshalling.serialize("1"));
+        }
     }
 
     public static int getExpireTimeInMilliseconds(String type) {
         return EXPIRE_TIME_MAP.getOrDefault(type, 0);
+    }
+
+    private static void processExistsCommand(InMemoryStorage storage, String[] args, BufferedWriter out) throws IOException {
+        int count = (int) IntStream.range(1, args.length)
+                .filter(i -> storage.exists(args[i]))
+                .count();
+
+        out.write(RESPMarshalling.serialize(String.valueOf(count)));
+    }
+
+    private static void processDelCommand(InMemoryStorage storage, String[] args, BufferedWriter out) throws IOException {
+        int count = 0;
+        for (var arg : args) {
+            storage.remove(arg);
+            storage.removeExpiry(arg);
+            count++;
+        }
+
+        out.write(RESPMarshalling.serialize(String.valueOf(count)));
     }
 
     private static void processSetCommand(InMemoryStorage storage, String[] arr, BufferedWriter out) throws IOException {
